@@ -2451,7 +2451,6 @@ PVOID receiveLwsMessageWrapper(PVOID args)
     SIGNALING_MESSAGE_TYPE messageType = SIGNALING_MESSAGE_TYPE_UNKNOWN;
     SignalingApiCallHookFunc receiveMessagePreHookFn = NULL, receiveMessagePreCallbackHookFn = NULL, receiveMessagePostHookFn = NULL;
     UINT64 hookCustomData = 0;
-    BOOL receiveCallbackLocked = FALSE;
 
     CHK(pSignalingMessageWrapper != NULL, STATUS_NULL_ARG);
 
@@ -2499,9 +2498,6 @@ PVOID receiveLwsMessageWrapper(PVOID args)
         CHK_STATUS(receiveMessagePreCallbackHookFn(hookCustomData));
     }
 
-    MUTEX_LOCK(pSignalingClient->receiveCallbackLock);
-    receiveCallbackLocked = TRUE;
-
     // Calling client receive message callback if specified and shutdown has not started
     if (!ATOMIC_LOAD_BOOL(&pSignalingClient->shutdown) && pSignalingClient->signalingClientCallbacks.messageReceivedFn != NULL) {
         CHK_STATUS(pSignalingClient->signalingClientCallbacks.messageReceivedFn(pSignalingClient->signalingClientCallbacks.customData,
@@ -2510,10 +2506,6 @@ PVOID receiveLwsMessageWrapper(PVOID args)
 
 CleanUp:
     CHK_LOG_ERR(retStatus);
-
-    if (receiveCallbackLocked) {
-        MUTEX_UNLOCK(pSignalingClient->receiveCallbackLock);
-    }
 
     SAFE_MEMFREE(pSignalingMessageWrapper);
     releaseSignalingClient(pSignalingClient);

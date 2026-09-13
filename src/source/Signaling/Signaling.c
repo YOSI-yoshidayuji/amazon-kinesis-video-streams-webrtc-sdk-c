@@ -213,8 +213,6 @@ STATUS createSignalingSync(PSignalingClientInfoInternal pClientInfo, PChannelInf
     CHK(IS_VALID_CVAR_VALUE(pSignalingClient->receiveCvar), STATUS_INVALID_OPERATION);
     pSignalingClient->receiveLock = MUTEX_CREATE(FALSE);
     CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->receiveLock), STATUS_INVALID_OPERATION);
-    pSignalingClient->receiveCallbackLock = MUTEX_CREATE(TRUE);
-    CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->receiveCallbackLock), STATUS_INVALID_OPERATION);
     pSignalingClient->jssWaitCvar = CVAR_CREATE();
     CHK(IS_VALID_CVAR_VALUE(pSignalingClient->jssWaitCvar), STATUS_INVALID_OPERATION);
     pSignalingClient->jssWaitLock = MUTEX_CREATE(FALSE);
@@ -328,10 +326,6 @@ static VOID destroySignalingClient(PSignalingClient pSignalingClient)
         MUTEX_FREE(pSignalingClient->receiveLock);
     }
 
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->receiveCallbackLock)) {
-        MUTEX_FREE(pSignalingClient->receiveCallbackLock);
-    }
-
     if (IS_VALID_CVAR_VALUE(pSignalingClient->receiveCvar)) {
         CVAR_FREE(pSignalingClient->receiveCvar);
     }
@@ -400,13 +394,7 @@ STATUS freeSignaling(PSignalingClient* ppSignalingClient)
     pSignalingClient = *ppSignalingClient;
     CHK(pSignalingClient != NULL, retStatus);
 
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->receiveCallbackLock)) {
-        MUTEX_LOCK(pSignalingClient->receiveCallbackLock);
-        ATOMIC_STORE_BOOL(&pSignalingClient->shutdown, TRUE);
-        MUTEX_UNLOCK(pSignalingClient->receiveCallbackLock);
-    } else {
-        ATOMIC_STORE_BOOL(&pSignalingClient->shutdown, TRUE);
-    }
+    ATOMIC_STORE_BOOL(&pSignalingClient->shutdown, TRUE);
 
     terminateOngoingOperations(pSignalingClient);
 

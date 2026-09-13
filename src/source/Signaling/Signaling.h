@@ -325,9 +325,6 @@ typedef struct {
     // Sync mutex for receiving response to the message condition variable
     MUTEX receiveLock;
 
-    // Serializes receive callback admission with shutdown. Re-entrant to allow free from the callback.
-    MUTEX receiveCallbackLock;
-
     // Conditional variable for receiving response to the sent message
     CVAR receiveCvar;
 

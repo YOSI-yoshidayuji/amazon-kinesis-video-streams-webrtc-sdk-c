@@ -1,5 +1,7 @@
 #include "SignalingApiFunctionalityTest.h"
+#include <chrono>
 #include <condition_variable>
+#include <thread>
 
 namespace com {
 namespace amazonaws {
@@ -13,10 +15,14 @@ struct ReceiveMessageHookContext {
     BOOL workerEntered = FALSE;
     BOOL workerMayProceed = FALSE;
     BOOL workerFinished = FALSE;
+    BOOL callbackEntered = FALSE;
+    BOOL freeFinished = FALSE;
+    BOOL blockCallbackOnApplicationLock = FALSE;
     BOOL freeClientInCallback = FALSE;
     UINT32 callbackCount = 0;
     STATUS freeStatus = STATUS_SUCCESS;
     PSignalingClient pSignalingClient = NULL;
+    std::mutex applicationLock;
 };
 
 STATUS receiveMessagePreHook(UINT64 customData)
@@ -51,7 +57,13 @@ STATUS receiveMessageCallback(UINT64 customData, PReceivedSignalingMessage pRece
     {
         std::lock_guard<std::mutex> lock(pContext->lock);
         pContext->callbackCount++;
+        pContext->callbackEntered = TRUE;
         freeClientInCallback = pContext->freeClientInCallback;
+        pContext->condition.notify_all();
+    }
+
+    if (pContext->blockCallbackOnApplicationLock) {
+        std::lock_guard<std::mutex> lock(pContext->applicationLock);
     }
 
     if (freeClientInCallback) {
@@ -363,6 +375,73 @@ TEST_F(SignalingApiFunctionalityTest, receiveMessageWorkerDoesNotAccessFreedClie
     EXPECT_EQ(STATUS_SUCCESS, status);
     EXPECT_EQ((PSignalingClient) NULL, pSignalingClient);
     EXPECT_EQ(0U, hookContext.callbackCount);
+
+    if (pSignalingClient != NULL) {
+        freeSignaling(&pSignalingClient);
+    }
+    freeStaticCredentialProvider(&pCredentialProvider);
+}
+
+TEST_F(SignalingApiFunctionalityTest, receiveMessageCallbackDoesNotDeadlockWithApplicationLockDuringFree)
+{
+    const std::string jsonMessage = R"({
+        "messageType": "ICE_CANDIDATE",
+        "senderClientId": "ClientA",
+        "messagePayload": "SGVsbG8="
+    })";
+    ReceiveMessageHookContext hookContext;
+    PAwsCredentialProvider pCredentialProvider = NULL;
+    PSignalingClient pSignalingClient = NULL;
+    PSignalingClient pSignalingClientRaw = NULL;
+    STATUS status;
+
+    hookContext.blockCallbackOnApplicationLock = TRUE;
+    std::unique_lock<std::mutex> applicationLock(hookContext.applicationLock);
+
+    status = createReceiveMessageTestClient(mChannelName, mRegion, mCaCertPath, mLogLevel, &hookContext, NULL, NULL, &pCredentialProvider,
+                                            &pSignalingClient);
+    ASSERT_EQ(STATUS_SUCCESS, status);
+    ASSERT_NE((PSignalingClient) NULL, pSignalingClient);
+    pSignalingClientRaw = pSignalingClient;
+
+    status = receiveLwsMessage(pSignalingClient, (PCHAR) jsonMessage.c_str(), (UINT32) jsonMessage.length());
+    if (STATUS_FAILED(status)) {
+        applicationLock.unlock();
+        freeSignaling(&pSignalingClient);
+        freeStaticCredentialProvider(&pCredentialProvider);
+    }
+    ASSERT_EQ(STATUS_SUCCESS, status);
+
+    {
+        std::unique_lock<std::mutex> lock(hookContext.lock);
+        hookContext.condition.wait(lock, [&hookContext] { return hookContext.callbackEntered != FALSE; });
+    }
+    EXPECT_EQ(2U, ATOMIC_LOAD(&pSignalingClientRaw->refCount));
+
+    std::thread freeThread([&hookContext, &pSignalingClient] {
+        hookContext.freeStatus = freeSignaling(&pSignalingClient);
+        std::lock_guard<std::mutex> lock(hookContext.lock);
+        hookContext.freeFinished = TRUE;
+        hookContext.condition.notify_all();
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(hookContext.lock);
+        EXPECT_TRUE(hookContext.condition.wait_for(lock, std::chrono::seconds(5), [&hookContext] { return hookContext.freeFinished != FALSE; }));
+    }
+    EXPECT_EQ(1U, ATOMIC_LOAD(&pSignalingClientRaw->refCount));
+
+    applicationLock.unlock();
+    freeThread.join();
+
+    {
+        std::unique_lock<std::mutex> lock(hookContext.lock);
+        hookContext.condition.wait(lock, [&hookContext] { return hookContext.workerFinished != FALSE; });
+    }
+
+    EXPECT_EQ(STATUS_SUCCESS, hookContext.freeStatus);
+    EXPECT_EQ((PSignalingClient) NULL, pSignalingClient);
+    EXPECT_EQ(1U, hookContext.callbackCount);
 
     if (pSignalingClient != NULL) {
         freeSignaling(&pSignalingClient);
