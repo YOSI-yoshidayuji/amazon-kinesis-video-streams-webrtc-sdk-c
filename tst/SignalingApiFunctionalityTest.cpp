@@ -25,6 +25,28 @@ struct ReceiveMessageHookContext {
     std::mutex applicationLock;
 };
 
+struct ThreadpoolBlockContext {
+    std::mutex lock;
+    std::condition_variable condition;
+    UINT32 enteredCount = 0;
+    UINT32 exitedCount = 0;
+    BOOL mayProceed = FALSE;
+};
+
+PVOID blockThreadpoolTask(PVOID customData)
+{
+    ThreadpoolBlockContext* pContext = (ThreadpoolBlockContext*) customData;
+    std::unique_lock<std::mutex> lock(pContext->lock);
+
+    pContext->enteredCount++;
+    pContext->condition.notify_all();
+    pContext->condition.wait(lock, [pContext] { return pContext->mayProceed != FALSE; });
+    pContext->exitedCount++;
+    pContext->condition.notify_all();
+
+    return NULL;
+}
+
 STATUS receiveMessagePreHook(UINT64 customData)
 {
     ReceiveMessageHookContext* pContext = (ReceiveMessageHookContext*) customData;
@@ -448,6 +470,69 @@ TEST_F(SignalingApiFunctionalityTest, receiveMessageCallbackDoesNotDeadlockWithA
     }
     freeStaticCredentialProvider(&pCredentialProvider);
 }
+
+#ifdef ENABLE_KVS_THREADPOOL
+TEST_F(SignalingApiFunctionalityTest, queuedReceiveTaskReleasesClientWhenThreadpoolIsDestroyed)
+{
+    const std::string jsonMessage = R"({
+        "messageType": "ICE_CANDIDATE",
+        "senderClientId": "ClientA",
+        "messagePayload": "SGVsbG8="
+    })";
+    ReceiveMessageHookContext hookContext;
+    ThreadpoolBlockContext blockContext;
+    PAwsCredentialProvider pCredentialProvider = NULL;
+    PSignalingClient pSignalingClient = NULL;
+    PSignalingClient pSignalingClientRaw = NULL;
+    PThreadPoolContext pThreadPoolContext = getReceiveThreadContextInstance();
+    STATUS status;
+    STATUS destroyStatus = STATUS_SUCCESS;
+
+    ASSERT_NE((PThreadpool) NULL, pThreadPoolContext->pThreadpool);
+    UINT32 maxThreads = pThreadPoolContext->pThreadpool->maxThreads;
+
+    for (UINT32 i = 0; i < maxThreads; i++) {
+        ASSERT_EQ(STATUS_SUCCESS, receiveThreadpoolContextPush(blockThreadpoolTask, &blockContext));
+        std::unique_lock<std::mutex> lock(blockContext.lock);
+        ASSERT_TRUE(
+            blockContext.condition.wait_for(lock, std::chrono::seconds(5), [&blockContext, i] { return blockContext.enteredCount == i + 1; }));
+    }
+
+    status = createReceiveMessageTestClient(mChannelName, mRegion, mCaCertPath, mLogLevel, &hookContext, NULL, NULL, &pCredentialProvider,
+                                            &pSignalingClient);
+    ASSERT_EQ(STATUS_SUCCESS, status);
+    ASSERT_NE((PSignalingClient) NULL, pSignalingClient);
+    pSignalingClientRaw = pSignalingClient;
+
+    ASSERT_EQ(STATUS_SUCCESS, receiveLwsMessage(pSignalingClient, (PCHAR) jsonMessage.c_str(), (UINT32) jsonMessage.length()));
+    ASSERT_EQ(2U, ATOMIC_LOAD(&pSignalingClientRaw->refCount));
+
+    ASSERT_EQ(STATUS_SUCCESS, freeSignaling(&pSignalingClient));
+    ASSERT_EQ((PSignalingClient) NULL, pSignalingClient);
+    ASSERT_EQ(1U, ATOMIC_LOAD(&pSignalingClientRaw->refCount));
+
+    std::thread destroyThread([&destroyStatus] { destroyStatus = destroyReceiveThreadPoolContext(); });
+
+    {
+        std::lock_guard<std::mutex> lock(blockContext.lock);
+        blockContext.mayProceed = TRUE;
+        blockContext.condition.notify_all();
+    }
+    destroyThread.join();
+
+    {
+        std::unique_lock<std::mutex> lock(blockContext.lock);
+        EXPECT_TRUE(blockContext.condition.wait_for(lock, std::chrono::seconds(5),
+                                                    [&blockContext, maxThreads] { return blockContext.exitedCount == maxThreads; }));
+    }
+
+    EXPECT_EQ(STATUS_SUCCESS, destroyStatus);
+    EXPECT_EQ(0U, hookContext.callbackCount);
+
+    EXPECT_EQ(STATUS_SUCCESS, createReceiveThreadPoolContext());
+    freeStaticCredentialProvider(&pCredentialProvider);
+}
+#endif
 
 TEST_F(SignalingApiFunctionalityTest, receiveMessageCallbackCanFreeClient)
 {

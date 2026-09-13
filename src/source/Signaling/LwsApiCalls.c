@@ -2293,7 +2293,7 @@ STATUS receiveLwsMessage(PSignalingClient pSignalingClient, PCHAR pMessage, UINT
 
 #ifdef ENABLE_KVS_THREADPOOL
     // This would fail if threadpool was not created
-    retStatus = threadpoolContextPush(receiveLwsMessageWrapper, pSignalingMessageWrapper);
+    retStatus = receiveThreadpoolContextPush(receiveLwsMessageWrapper, pSignalingMessageWrapper);
     if (STATUS_SUCCEEDED(retStatus)) {
         receiveWorkerScheduled = TRUE;
     }
