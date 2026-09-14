@@ -375,18 +375,26 @@ VOID acquireSignalingClient(PSignalingClient pSignalingClient)
     }
 }
 
-VOID releaseSignalingClient(PSignalingClient pSignalingClient)
+SIZE_T releaseSignalingClient(PSignalingClient pSignalingClient)
 {
+    SIZE_T remainingRefCount = 0;
+
     // ATOMIC_DECREMENT returns the value before decrementing.
-    if (pSignalingClient != NULL && ATOMIC_DECREMENT(&pSignalingClient->refCount) == 1) {
-        destroySignalingClient(pSignalingClient);
+    if (pSignalingClient != NULL) {
+        remainingRefCount = ATOMIC_DECREMENT(&pSignalingClient->refCount) - 1;
+        if (remainingRefCount == 0) {
+            destroySignalingClient(pSignalingClient);
+        }
     }
+
+    return remainingRefCount;
 }
 
 STATUS freeSignaling(PSignalingClient* ppSignalingClient)
 {
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
+    SIZE_T remainingRefCount;
     PSignalingClient pSignalingClient;
 
     CHK(ppSignalingClient != NULL, STATUS_NULL_ARG);
@@ -399,7 +407,10 @@ STATUS freeSignaling(PSignalingClient* ppSignalingClient)
     terminateOngoingOperations(pSignalingClient);
 
     *ppSignalingClient = NULL;
-    releaseSignalingClient(pSignalingClient);
+    remainingRefCount = releaseSignalingClient(pSignalingClient);
+    if (remainingRefCount != 0) {
+        DLOGW("Signaling client destruction deferred; %u async reference(s) outstanding", (UINT32) remainingRefCount);
+    }
 
 CleanUp:
     LEAVES();

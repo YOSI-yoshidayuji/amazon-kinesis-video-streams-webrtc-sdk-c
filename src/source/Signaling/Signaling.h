@@ -400,7 +400,7 @@ typedef struct {
 STATUS createSignalingSync(PSignalingClientInfoInternal, PChannelInfo, PSignalingClientCallbacks, PAwsCredentialProvider, PSignalingClient*);
 STATUS freeSignaling(PSignalingClient*);
 VOID acquireSignalingClient(PSignalingClient);
-VOID releaseSignalingClient(PSignalingClient);
+SIZE_T releaseSignalingClient(PSignalingClient);
 
 STATUS signalingSendMessageSync(PSignalingClient, PSignalingMessage);
 STATUS signalingGetIceConfigInfoCount(PSignalingClient, PUINT32);
