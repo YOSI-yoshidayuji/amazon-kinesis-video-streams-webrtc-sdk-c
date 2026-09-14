@@ -404,7 +404,7 @@ STATUS freeSignaling(PSignalingClient* ppSignalingClient)
 
     ATOMIC_STORE_BOOL(&pSignalingClient->shutdown, TRUE);
 
-    terminateOngoingOperations(pSignalingClient);
+    CHK_LOG_ERR(terminateOngoingOperations(pSignalingClient));
 
     *ppSignalingClient = NULL;
     remainingRefCount = releaseSignalingClient(pSignalingClient);
@@ -488,10 +488,10 @@ STATUS terminateOngoingOperations(PSignalingClient pSignalingClient)
     CHK(pSignalingClient != NULL, STATUS_NULL_ARG);
 
     // Terminate the listener thread if alive
-    terminateLwsListenerLoop(pSignalingClient);
+    CHK_LOG_ERR(terminateLwsListenerLoop(pSignalingClient));
 
     // Await for the reconnect thread to exit
-    awaitForThreadTermination(&pSignalingClient->reconnecterTracker, SIGNALING_CLIENT_SHUTDOWN_TIMEOUT);
+    CHK_LOG_ERR(awaitForThreadTermination(&pSignalingClient->reconnecterTracker, SIGNALING_CLIENT_SHUTDOWN_TIMEOUT));
 
 CleanUp:
 
